@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice SDK Test</title>
+</head>
+
+<body>
+    <h2>Voice Room MVP</h2>
+    <button id="joinBtn">Join Voice Room</button>
+    <p id="status">Status: Disconnected</p>
+
+    <div id="audio-container"></div>
+
+    <script>
+        const roomID = "test-room";
+        const clientID = "user-" + Math.floor(Math.random() * 10000);
+
+        let ws;
+        let pc;
+        let localStream;
+
+        document.getElementById('joinBtn').onclick = async () => {
+            document.getElementById('status').innerText = "Status: Connecting...";
+
+            
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+            
+            ws = new WebSocket(`ws://localhost:8080/ws/voice/room/${roomID}/client/${clientID}`);
+
+            ws.onopen = async () => {
+                
+                pc = new RTCPeerConnection();
+
+                
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+                
+                pc.ontrack = (event) => {
+                    const audioEl = document.createElement('audio');
+                    audioEl.srcObject = event.streams[0];
+                    audioEl.autoplay = true;
+                    audioEl.controls = true;
+                    document.getElementById('audio-container').appendChild(audioEl);
+                };
+
+                
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    data: {
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    }
+                }));
+            };
+
+            
+            ws.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                if (message.type === 'answer') {
+                    await pc.setRemoteDescription(new RTCSessionDescription(message.data));
+                    document.getElementById('status').innerText = "Status: Connected & Streaming!";
+                }
+            };
+        };
+    </script>
+</body>
+
+</html>
