@@ -1,0 +1,352 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: #000;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+}
+
+.container {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: #000;
+}
+
+/* Main Content */
+.main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    position: relative;
+}
+
+/* Top Section - Listening Indicator */
+.top-section {
+    position: absolute;
+    top: 60px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.top-section.active {
+    opacity: 1;
+}
+
+.listening-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 30px;
+}
+
+.pulse {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #4ade80;
+    animation: pulse 1s ease-in-out infinite;
+}
+
+.pulse:nth-child(1) {
+    animation-delay: 0s;
+}
+
+.pulse:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.pulse:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 0.3;
+    }
+
+    50% {
+        opacity: 1;
+    }
+}
+
+.listening-text {
+    font-size: 12px;
+    color: #888;
+    font-weight: 500;
+}
+
+/* Center Section - User ID */
+.center-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    z-index: 10;
+}
+
+.user-id-display {
+    width: 240px;
+    height: 240px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(100, 100, 100, 0.3) 0%, rgba(50, 50, 50, 0.5) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.user-id-display:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.user-id-number {
+    font-size: 72px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: #fff;
+}
+
+.user-status {
+    font-size: 14px;
+    color: #888;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+/* Timer Section */
+.timer-section {
+    position: absolute;
+    bottom: 120px;
+    font-size: 36px;
+    font-weight: 300;
+    color: #999;
+    letter-spacing: 1px;
+}
+
+/* Controls */
+.controls {
+    padding: 40px 20px;
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    background: #000;
+}
+
+/* Buttons */
+.btn {
+    border: none;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    outline: none;
+}
+
+.btn:active {
+    transform: scale(0.95);
+}
+
+/* Join Button */
+.btn-join {
+    background: #6366f1;
+    color: #fff;
+    padding: 14px 32px;
+    font-size: 16px;
+    border-radius: 50px;
+}
+
+.btn-join:hover {
+    background: #4f46e5;
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+    transform: translateY(-2px);
+}
+
+/* Leave Button */
+.btn-leave {
+    background: #ef4444;
+    color: #fff;
+    padding: 14px 32px;
+    font-size: 16px;
+    border-radius: 50px;
+}
+
+.btn-leave:hover {
+    background: #dc2626;
+    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
+    transform: translateY(-2px);
+}
+
+/* Control Buttons */
+.control-buttons {
+    display: flex;
+    gap: 16px;
+}
+
+.btn-control {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    transition: all 0.3s ease;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.btn-control:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.btn-control.active {
+    background: #4ade80;
+    color: #000;
+    border-color: #4ade80;
+    box-shadow: 0 0 20px rgba(74, 222, 128, 0.3);
+}
+
+.btn-control.disabled {
+    background: #ef4444;
+    color: #fff;
+    border-color: #ef4444;
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+.btn-control svg {
+    width: 24px;
+    height: 24px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .main-content {
+        padding: 20px;
+    }
+
+    .user-id-display {
+        width: 160px;
+        height: 160px;
+    }
+
+    .user-id-display span {
+        font-size: 48px;
+        letter-spacing: 2px;
+    }
+
+    .timer-section {
+        font-size: 28px;
+        bottom: 100px;
+    }
+
+    .controls {
+        padding: 30px 20px;
+        gap: 15px;
+    }
+
+    .btn-join,
+    .btn-leave {
+        width: 100%;
+        padding: 12px 24px;
+    }
+
+    .btn-control {
+        width: 48px;
+        height: 48px;
+    }
+
+    .btn-control svg {
+        width: 20px;
+        height: 20px;
+    }
+}
+
+@media (max-width: 480px) {
+    .main-content {
+        padding: 15px;
+    }
+
+    .user-id-display {
+        width: 140px;
+        height: 140px;
+    }
+
+    .user-id-display span {
+        font-size: 40px;
+        letter-spacing: 1px;
+    }
+
+    .user-status {
+        font-size: 12px;
+    }
+
+    .timer-section {
+        font-size: 24px;
+        bottom: 90px;
+    }
+
+    .top-section {
+        top: 40px;
+    }
+
+    .controls {
+        flex-direction: column;
+        gap: 12px;
+        padding: 20px;
+    }
+
+    .btn-join,
+    .btn-leave {
+        width: 100%;
+        font-size: 14px;
+    }
+
+    .control-buttons {
+        gap: 12px;
+        justify-content: center;
+    }
+
+    .btn-control {
+        width: 44px;
+        height: 44px;
+    }
+
+    .btn-control svg {
+        width: 18px;
+        height: 18px;
+    }
+}

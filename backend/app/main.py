@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.config import settings
-from app.routes import signaling
+from app.routes import signaling, sessions
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +21,7 @@ app.add_middleware(
 )
 
 app.include_router(signaling.router)
+app.include_router(sessions.router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():

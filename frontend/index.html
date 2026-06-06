@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Room</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Section -->
+            <div class="top-section">
+                <div class="listening-indicator" id="listeningIndicator">
+                    <span class="pulse"></span>
+                    <span class="pulse"></span>
+                    <span class="pulse"></span>
+                </div>
+                <p class="listening-text">listening...</p>
+            </div>
+
+            <!-- Center Section - User ID -->
+            <div class="center-section">
+                <div class="user-id-display" id="userIdDisplay">
+                </div>
+                <span id="userId" class="user-id-number">USER</span>
+                <p class="user-status" id="userStatus">Not Connected</p>
+            </div>
+
+            <!-- Timer -->
+            <div class="timer-section">
+                <span id="timer">0:00</span>
+            </div>
+        </main>
+
+        <!-- Controls -->
+        <div class="controls">
+            <!-- Join/Leave Button -->
+            <button id="joinBtn" class="btn btn-join">Join Voice Room</button>
+            <button id="leaveBtn" class="btn btn-leave" style="display: none;">End Conversation</button>
+
+            <!-- Control Buttons -->
+            <div class="control-buttons" id="controlButtons" style="display: none;">
+                <button id="micBtn" class="btn btn-control btn-mic active" title="Toggle Microphone">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                        <line x1="12" y1="19" x2="12" y2="23"></line>
+                        <line x1="8" y1="23" x2="16" y2="23"></line>
+                    </svg>
+                </button>
+                <button id="cameraBtn" class="btn btn-control btn-camera" title="Toggle Camera">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z">
+                        </path>
+                        <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                </button>
+                <button id="settingsBtn" class="btn btn-control btn-settings" title="Settings">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="1"></circle>
+                        <path d="M12 1v6m0 6v6"></path>
+                        <path d="M4.22 4.22l4.24 4.24m5.08 5.08l4.24 4.24"></path>
+                        <path d="M1 12h6m6 0h6"></path>
+                        <path d="M4.22 19.78l4.24-4.24m5.08-5.08l4.24-4.24"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
