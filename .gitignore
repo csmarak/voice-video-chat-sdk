@@ -28,3 +28,10 @@ Thumbs.db
 
 # Dependencies
 node_modules/
+
+# Command Code
+.commandcode/
+
+# Misc
+proposal.html
+SESSION_CONTEXT.md
