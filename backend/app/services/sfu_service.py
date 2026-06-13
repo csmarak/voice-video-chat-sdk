@@ -2,11 +2,33 @@ import asyncio
 from typing import Dict, List, Any
 import json
 import logging
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCRtpSender
 from aiortc.contrib.media import MediaRelay
+from aiortc.exceptions import InvalidStateError
 from starlette.websockets import WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
+
+# --- AIORTC LIBRARY BUG MONKEY PATCH ---
+# Known aiortc __encoder teardown race (GitHub Issue #1124):
+# RTCP feedback packets arriving after PC close hit a deleted encoder.
+# This intercepts _handle_rtcp_packet and silently swallows the specific AttributeError.
+_original_handle_rtcp_packet = RTCRtpSender._handle_rtcp_packet
+
+
+async def _safe_handle_rtcp_packet(self, packet):
+    try:
+        if not hasattr(self, "_RTCRtpSender__encoder"):
+            return
+        await _original_handle_rtcp_packet(self, packet)
+    except AttributeError as e:
+        if "_RTCRtpSender__encoder" in str(e):
+            pass
+        else:
+            raise e
+
+
+RTCRtpSender._handle_rtcp_packet = _safe_handle_rtcp_packet
 
 
 async def safe_send_text(websocket: Any, message: dict) -> bool:
@@ -18,6 +40,13 @@ async def safe_send_text(websocket: Any, message: dict) -> bool:
         return False
 
 
+def _spawn_bg_task(coro, peer_ctx: "PeerContext"):
+    task = asyncio.create_task(coro)
+    peer_ctx._bg_tasks.add(task)
+    task.add_done_callback(lambda t: peer_ctx._bg_tasks.discard(t))
+    return task
+
+
 class PeerContext:
     def __init__(self, client_id: str, display_name: str, websocket: Any):
         self.client_id = client_id
@@ -26,6 +55,7 @@ class PeerContext:
         self.pc = RTCPeerConnection()
         self.is_muted = False
         self.is_camera_off = False
+        self._bg_tasks: set = set()
         self._reneg_task = None
 
 
@@ -38,6 +68,8 @@ class Room:
         self.video_tracks: Dict[str, MediaStreamTrack] = {}
         self._reneg_lock = asyncio.Lock()
         self._reneg_generation = 0
+        self._is_zombie = False
+        self._teardown_task: asyncio.Task = None
 
 
 class SFUService:
@@ -46,10 +78,31 @@ class SFUService:
         self.relay = MediaRelay()
 
     def get_or_create_room(self, room_id: str, room_type: str) -> Room:
-        if room_id not in self.rooms:
-            self.rooms[room_id] = Room(room_id, room_type)
-            logger.info(f"Created new {room_type} room: {room_id}")
+        if room_id in self.rooms:
+            room = self.rooms[room_id]
+            if room._teardown_task and not room._teardown_task.done():
+                room._teardown_task.cancel()
+                room._teardown_task = None
+                logger.info(f"Room {room_id} revived from zombie state")
+            room._is_zombie = False
+            return room
+        self.rooms[room_id] = Room(room_id, room_type)
+        logger.info(f"Created new {room_type} room: {room_id}")
         return self.rooms[room_id]
+
+    async def _close_pc_safely(self, pc: RTCPeerConnection, owner_id: str):
+        pc.on("connectionstatechange")(lambda: None)
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        await asyncio.sleep(0.1)
+
+    def _pc_is_alive(self, pc: RTCPeerConnection) -> bool:
+        try:
+            return pc.connectionState not in ("closed", "failed")
+        except Exception:
+            return False
 
     def _get_peer_tracks(self, room: Room, exclude_client_id: str) -> List[MediaStreamTrack]:
         tracks = []
@@ -69,13 +122,15 @@ class SFUService:
         if room._reneg_generation != generation:
             return
 
+        if peer_ctx.pc.connectionState in ("closed", "failed"):
+            return
+
         tracks = self._get_peer_tracks(room, client_id)
         if not tracks:
             logger.info(f"No other tracks for {client_id}, skipping rebuild")
             return
 
         old_pc = peer_ctx.pc
-        old_pc_id = id(old_pc)
 
         new_pc = RTCPeerConnection()
         for track in tracks:
@@ -91,19 +146,28 @@ class SFUService:
 
         peer_ctx.pc = new_pc
 
-        try:
-            await old_pc.close()
-        except Exception:
-            pass
-        await asyncio.sleep(0.05)
+        for sender in old_pc.getSenders():
+            if sender.track:
+                sender.track.stop()
+
+        await self._close_pc_safely(old_pc, client_id)
 
         if client_id not in room.peers:
             return
         if room._reneg_generation != generation:
             return
 
-        offer = await new_pc.createOffer()
-        await new_pc.setLocalDescription(offer)
+        try:
+            offer = await new_pc.createOffer()
+            await new_pc.setLocalDescription(offer)
+        except InvalidStateError:
+            logger.warning(f"Skipped renegotiation for {client_id}, connection is dead.")
+            await self._close_pc_safely(new_pc, client_id)
+            return
+        except Exception as e:
+            logger.exception(f"Failed to create renegotiation offer for {client_id}: {e}")
+            await self._close_pc_safely(new_pc, client_id)
+            return
 
         sent = await safe_send_text(peer_ctx.websocket, {
             "type": "server_offer",
@@ -117,24 +181,33 @@ class SFUService:
             logger.info(f"Sent renegotiation offer to {client_id} ({len(tracks)} tracks)")
         else:
             logger.info(f"Could not send renegotiation to {client_id} (websocket closed)")
+            await self._close_pc_safely(new_pc, client_id)
+            return
 
     async def _renegotiate_all(self, room: Room, origin_client_id: str):
-        async with room._reneg_lock:
-            room._reneg_generation += 1
-            generation = room._reneg_generation
+        try:
+            async with room._reneg_lock:
+                room._reneg_generation += 1
+                generation = room._reneg_generation
 
-            peers_snapshot = list(room.peers.items())
-            tasks = []
+                peers_snapshot = list(room.peers.items())
+                tasks = []
 
-            for client_id, peer_ctx in peers_snapshot:
-                if client_id == origin_client_id:
-                    continue
-                if client_id not in room.peers:
-                    continue
-                tasks.append(self._rebuild_single_peer(room, peer_ctx, generation))
+                for client_id, peer_ctx in peers_snapshot:
+                    if client_id == origin_client_id:
+                        continue
+                    if client_id not in room.peers:
+                        continue
+                    tasks.append(self._rebuild_single_peer(room, peer_ctx, generation))
 
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for i, r in enumerate(results):
+                        if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
+                            logger.warning(f"Rebuild task failed silently: {r}")
+        except (asyncio.CancelledError, Exception) as e:
+            if not isinstance(e, asyncio.CancelledError):
+                logger.warning(f"Renegotiation aborted for room {room.room_id}: {e}")
 
     async def handle_join(self, room_id: str, room_type: str, client_id: str, display_name: str, websocket: Any):
         if room_id in self.rooms and self.rooms[room_id].room_type != room_type:
@@ -156,7 +229,8 @@ class SFUService:
             state = peer_ctx.pc.connectionState
             logger.info(f"Client {client_id} WebRTC state: {state}")
             if state in ("failed", "closed"):
-                await self.remove_peer(room_id, client_id)
+                if client_id in room.peers:
+                    await self.remove_peer(room_id, client_id)
 
         @peer_ctx.pc.on("track")
         def on_track(track):
@@ -168,14 +242,20 @@ class SFUService:
 
             if peer_ctx._reneg_task and not peer_ctx._reneg_task.done():
                 peer_ctx._reneg_task.cancel()
+                peer_ctx._bg_tasks.discard(peer_ctx._reneg_task)
                 peer_ctx._reneg_task = None
 
             async def deferred_reneg():
-                await asyncio.sleep(0.8)
-                if client_id in room.peers:
-                    await self._renegotiate_all(room, client_id)
+                try:
+                    await asyncio.sleep(0.8)
+                    if client_id in room.peers:
+                        await self._renegotiate_all(room, client_id)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Deferred renegotiation failed for {client_id}: {e}")
 
-            peer_ctx._reneg_task = asyncio.create_task(deferred_reneg())
+            peer_ctx._reneg_task = _spawn_bg_task(deferred_reneg(), peer_ctx)
 
         existing_users = [
             {"client_id": p.client_id, "display_name": p.display_name, "is_muted": p.is_muted}
@@ -199,7 +279,12 @@ class SFUService:
             raise ValueError("Room not found")
 
         peer_ctx = room.peers.get(client_id)
+        if not peer_ctx:
+            raise ValueError("Peer not found in room")
+
         pc = peer_ctx.pc
+        if not self._pc_is_alive(pc):
+            raise RuntimeError(f"PC for {client_id} is {pc.connectionState}")
 
         for track in self._get_peer_tracks(room, client_id):
             pc.addTrack(track)
@@ -218,6 +303,10 @@ class SFUService:
             return
 
         pc = room.peers[client_id].pc
+        if not self._pc_is_alive(pc):
+            logger.info(f"Ignoring client_answer for {client_id}, PC is {pc.connectionState}")
+            return
+
         if pc.signalingState not in ("have-local-offer", "stable"):
             logger.warning(f"Ignoring client_answer for {client_id}, signalingState is {pc.signalingState}")
             return
@@ -248,13 +337,16 @@ class SFUService:
 
         if peer_ctx._reneg_task and not peer_ctx._reneg_task.done():
             peer_ctx._reneg_task.cancel()
-            peer_ctx._reneg_task = None
+        for t in list(peer_ctx._bg_tasks):
+            if not t.done():
+                t.cancel()
+        peer_ctx._bg_tasks.clear()
 
-        try:
-            await peer_ctx.pc.close()
-        except Exception:
-            pass
-        await asyncio.sleep(0.05)
+        for sender in peer_ctx.pc.getSenders():
+            if sender.track:
+                sender.track.stop()
+
+        await self._close_pc_safely(peer_ctx.pc, client_id)
 
         room.audio_tracks.pop(client_id, None)
         room.video_tracks.pop(client_id, None)
@@ -268,9 +360,21 @@ class SFUService:
         async with room._reneg_lock:
             room._reneg_generation += 1
 
-        if not room.peers:
-            self.rooms.pop(room_id, None)
-            logger.info(f"Room {room_id} empty. Teardown complete.")
+        if not room.peers and not room._is_zombie:
+            room._is_zombie = True
+
+            async def delayed_teardown():
+                await asyncio.sleep(8)
+                if room_id in self.rooms and self.rooms[room_id] is room:
+                    if not room.peers:
+                        self.rooms.pop(room_id, None)
+                        logger.info(f"Room {room_id} zombie expired. Teardown complete.")
+                    else:
+                        logger.info(f"Room {room_id} revived during zombie period, cancelling teardown")
+                room._is_zombie = False
+
+            room._teardown_task = asyncio.create_task(delayed_teardown())
+            logger.info(f"Room {room_id} empty, entering zombie state (8s teardown)")
 
 
 sfu_service = SFUService()

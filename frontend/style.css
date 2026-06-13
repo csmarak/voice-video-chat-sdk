@@ -1,352 +1,357 @@
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --bg: #0a0a0f;
+    --surface: #151520;
+    --surface2: #1e1e2e;
+    --border: #2a2a3a;
+    --text: #e4e4ec;
+    --text2: #8888a0;
+    --accent: #7c3aed;
+    --accent-hover: #6d28d9;
+    --green: #22c55e;
+    --red: #ef4444;
+    --radius: 16px;
+    --radius-sm: 10px;
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    background: #000;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
     min-height: 100vh;
     display: flex;
-    align-items: center;
     justify-content: center;
-    color: #fff;
+    overflow-x: hidden;
 }
 
-.container {
+#app { width: 100%; max-width: 900px; min-height: 100vh; }
+
+/* ============================================================
+   Views
+   ============================================================ */
+
+.view {
+    display: none;
+    min-height: 100vh;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.view.active { display: flex; }
+
+/* ============================================================
+   Card (Lobby / Join)
+   ============================================================ */
+
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 40px 36px;
     width: 100%;
-    height: 100vh;
+    max-width: 460px;
     display: flex;
     flex-direction: column;
-    background: #000;
-}
-
-/* Main Content */
-.main-content {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 40px;
-    position: relative;
-}
-
-/* Top Section - Listening Indicator */
-.top-section {
-    position: absolute;
-    top: 60px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-}
-
-.top-section.active {
-    opacity: 1;
-}
-
-.listening-indicator {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 30px;
-}
-
-.pulse {
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: #4ade80;
-    animation: pulse 1s ease-in-out infinite;
-}
-
-.pulse:nth-child(1) {
-    animation-delay: 0s;
-}
-
-.pulse:nth-child(2) {
-    animation-delay: 0.15s;
-}
-
-.pulse:nth-child(3) {
-    animation-delay: 0.3s;
-}
-
-@keyframes pulse {
-
-    0%,
-    100% {
-        opacity: 0.3;
-    }
-
-    50% {
-        opacity: 1;
-    }
-}
-
-.listening-text {
-    font-size: 12px;
-    color: #888;
-    font-weight: 500;
-}
-
-/* Center Section - User ID */
-.center-section {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
     gap: 20px;
-    z-index: 10;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
 }
 
-.user-id-display {
-    width: 240px;
-    height: 240px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, rgba(100, 100, 100, 0.3) 0%, rgba(50, 50, 50, 0.5) 100%);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 2px solid rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    transition: all 0.3s ease;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+.logo {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    text-align: center;
+    background: linear-gradient(135deg, #a78bfa, #7c3aed);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
 
-.user-id-display:hover {
-    border-color: rgba(255, 255, 255, 0.2);
-}
-
-.user-id-number {
-    font-size: 72px;
-    font-weight: 700;
-    letter-spacing: 3px;
-    color: #fff;
-}
-
-.user-status {
+.subtitle {
+    text-align: center;
+    color: var(--text2);
     font-size: 14px;
-    color: #888;
-    font-weight: 500;
-    letter-spacing: 0.5px;
+    margin-top: -12px;
 }
 
-/* Timer Section */
-.timer-section {
-    position: absolute;
-    bottom: 120px;
-    font-size: 36px;
-    font-weight: 300;
-    color: #999;
-    letter-spacing: 1px;
+/* ============================================================
+   Room Type Toggle
+   ============================================================ */
+
+.room-type-select {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
 }
 
-/* Controls */
-.controls {
-    padding: 40px 20px;
+.type-btn {
+    background: var(--surface2);
+    border: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px 12px;
+    color: var(--text2);
+    cursor: pointer;
     display: flex;
-    gap: 20px;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    background: #000;
+    gap: 6px;
+    transition: all 0.2s;
+    font-family: inherit;
+    width: 100%;
 }
+.type-btn:hover { border-color: var(--accent); color: var(--text); }
+.type-btn.active {
+    border-color: var(--accent);
+    background: rgba(124,58,237,0.12);
+    color: var(--text);
+}
+.type-btn span { font-size: 14px; font-weight: 600; }
+.type-btn small { font-size: 11px; color: var(--text2); }
 
-/* Buttons */
-.btn {
-    border: none;
-    border-radius: 12px;
-    font-size: 14px;
+/* ============================================================
+   Input Groups
+   ============================================================ */
+
+.input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.input-group label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text2);
+}
+.input-group label span { font-weight: 400; color: #666; }
+.input-group input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.input-group input:focus { border-color: var(--accent); }
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+
+.btn-primary, .btn-secondary {
+    padding: 14px 24px;
+    border-radius: 50px;
+    font-size: 15px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s ease;
+    border: none;
+    transition: all 0.2s;
+    width: 100%;
+    text-align: center;
+    font-family: inherit;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); box-shadow: 0 8px 24px rgba(124,58,237,0.3); transform: translateY(-1px); }
+.btn-secondary { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--accent); color: var(--text); }
+
+.divider {
     display: flex;
     align-items: center;
-    gap: 8px;
-    outline: none;
+    gap: 12px;
+    color: var(--text2);
+    font-size: 13px;
 }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 
-.btn:active {
-    transform: scale(0.95);
-}
+/* ============================================================
+   Room View — Topbar
+   ============================================================ */
 
-/* Join Button */
-.btn-join {
-    background: #6366f1;
-    color: #fff;
-    padding: 14px 32px;
-    font-size: 16px;
-    border-radius: 50px;
-}
-
-.btn-join:hover {
-    background: #4f46e5;
-    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
-    transform: translateY(-2px);
-}
-
-/* Leave Button */
-.btn-leave {
-    background: #ef4444;
-    color: #fff;
-    padding: 14px 32px;
-    font-size: 16px;
-    border-radius: 50px;
-}
-
-.btn-leave:hover {
-    background: #dc2626;
-    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
-    transform: translateY(-2px);
-}
-
-/* Control Buttons */
-.control-buttons {
+.room-topbar {
     display: flex;
-    gap: 16px;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
 }
 
-.btn-control {
-    width: 56px;
-    height: 56px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    padding: 0;
+.room-info { display: flex; align-items: center; gap: 10px; }
+
+.room-code {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: var(--accent);
+    background: rgba(124,58,237,0.1);
+    padding: 4px 12px;
+    border-radius: 6px;
+}
+
+.room-type-badge {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+.badge-voice { background: rgba(34,197,94,0.15); color: var(--green); }
+.badge-video { background: rgba(124,58,237,0.15); color: #a78bfa; }
+
+.room-timer {
+    font-size: 22px;
+    font-weight: 300;
+    color: var(--text2);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   Participant Grid
+   ============================================================ */
+
+.participant-grid {
+    flex: 1;
+    padding: 16px;
+    display: grid;
+    gap: 12px;
+    align-content: center;
+    justify-items: center;
+}
+
+/* Grid layouts for different participant counts */
+.participant-grid:has(.participant-tile:nth-child(1):last-child) { grid-template-columns: 1fr; }
+.participant-grid:has(.participant-tile:nth-child(2):last-child) { grid-template-columns: 1fr 1fr; }
+.participant-grid:has(.participant-tile:nth-child(3):last-child) { grid-template-columns: 1fr 1fr; }
+.participant-grid:has(.participant-tile:nth-child(n+4):last-child) { grid-template-columns: 1fr 1fr; }
+
+.participant-tile {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    max-width: 380px;
+    position: relative;
+    overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 24px;
-    transition: all 0.3s ease;
-    border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-.btn-control:hover {
-    background: rgba(255, 255, 255, 0.15);
-    border-color: rgba(255, 255, 255, 0.3);
+.participant-tile video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
-.btn-control.active {
-    background: #4ade80;
-    color: #000;
-    border-color: #4ade80;
-    box-shadow: 0 0 20px rgba(74, 222, 128, 0.3);
-}
-
-.btn-control.disabled {
-    background: #ef4444;
+.participant-avatar {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 36px;
+    font-weight: 700;
     color: #fff;
-    border-color: #ef4444;
-    box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
 }
 
-.btn-control svg {
-    width: 24px;
-    height: 24px;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+.participant-label {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    right: 10px;
+    background: rgba(0,0,0,0.65);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    max-width: fit-content;
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-    .main-content {
-        padding: 20px;
-    }
+.mic-off-icon { color: var(--red); flex-shrink: 0; }
 
-    .user-id-display {
-        width: 160px;
-        height: 160px;
-    }
+/* ============================================================
+   Room Controls
+   ============================================================ */
 
-    .user-id-display span {
-        font-size: 48px;
-        letter-spacing: 2px;
-    }
-
-    .timer-section {
-        font-size: 28px;
-        bottom: 100px;
-    }
-
-    .controls {
-        padding: 30px 20px;
-        gap: 15px;
-    }
-
-    .btn-join,
-    .btn-leave {
-        width: 100%;
-        padding: 12px 24px;
-    }
-
-    .btn-control {
-        width: 48px;
-        height: 48px;
-    }
-
-    .btn-control svg {
-        width: 20px;
-        height: 20px;
-    }
+.room-controls {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    padding: 18px 24px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
 }
 
-@media (max-width: 480px) {
-    .main-content {
-        padding: 15px;
-    }
+.ctrl-btn {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+.ctrl-btn:hover { border-color: var(--accent); color: var(--text); }
+.ctrl-btn.active { background: var(--green); border-color: var(--green); color: #000; }
 
-    .user-id-display {
-        width: 140px;
-        height: 140px;
-    }
+.ctrl-leave { background: rgba(239,68,68,0.15); border-color: var(--red); color: var(--red); }
+.ctrl-leave:hover { background: var(--red); color: #fff; }
 
-    .user-id-display span {
-        font-size: 40px;
-        letter-spacing: 1px;
-    }
+/* ============================================================
+   Toast
+   ============================================================ */
 
-    .user-status {
-        font-size: 12px;
-    }
+.toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-120px);
+    padding: 12px 28px;
+    border-radius: 50px;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 999;
+    transition: transform 0.3s ease;
+    pointer-events: none;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast-ok { background: var(--green); color: #000; }
+.toast-err { background: var(--red); color: #fff; }
 
-    .timer-section {
-        font-size: 24px;
-        bottom: 90px;
-    }
+/* ============================================================
+   Room View Layout
+   ============================================================ */
 
-    .top-section {
-        top: 40px;
-    }
+#roomView.active {
+    flex-direction: column;
+}
 
-    .controls {
-        flex-direction: column;
-        gap: 12px;
-        padding: 20px;
-    }
+/* ============================================================
+   Responsive
+   ============================================================ */
 
-    .btn-join,
-    .btn-leave {
-        width: 100%;
-        font-size: 14px;
-    }
-
-    .control-buttons {
-        gap: 12px;
-        justify-content: center;
-    }
-
-    .btn-control {
-        width: 44px;
-        height: 44px;
-    }
-
-    .btn-control svg {
-        width: 18px;
-        height: 18px;
-    }
+@media (max-width: 600px) {
+    .card { padding: 28px 20px; gap: 16px; border-radius: 20px; }
+    .logo { font-size: 24px; }
+    .type-btn { padding: 12px 8px; }
+    .room-code { font-size: 15px; letter-spacing: 2px; }
+    .ctrl-btn { width: 46px; height: 46px; }
+    .participant-grid { gap: 8px; padding: 10px; }
+    .participant-tile { border-radius: 12px; }
 }

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pion SFU Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0e27;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            color: #888;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .panel {
+            background: #1a1f3a;
+            border-radius: 12px;
+            padding: 30px;
+        }
+
+        .status {
+            font-size: 14px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            display: inline-block;
+            margin-bottom: 20px;
+        }
+
+        .status.connected {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4caf50;
+        }
+
+        .status.disconnected {
+            background: rgba(244, 67, 54, 0.2);
+            color: #f44336;
+        }
+
+        .status.reconnecting {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+
+        .input-group {
+            margin-bottom: 16px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 6px;
+            font-size: 13px;
+            color: #ccc;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            background: #0a0e27;
+            color: white;
+            font-size: 14px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            width: 100%;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-danger {
+            background: #ff6b6b;
+            color: white;
+            width: 100%;
+            margin-top: 12px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .participants {
+            margin-top: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .peer-tag {
+            background: rgba(102, 126, 234, 0.2);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #667eea;
+        }
+
+        .log {
+            margin-top: 20px;
+            background: #0a0e27;
+            border-radius: 8px;
+            padding: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            text-align: left;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            color: #888;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Pion SFU Test</h1>
+        <p class="subtitle">Pure Go WebRTC — port 8081</p>
+
+        <div class="panel">
+            <span class="status disconnected" id="status">Disconnected</span>
+
+            <div id="lobby">
+                <div class="input-group">
+                    <label for="roomId">Room ID</label>
+                    <input type="text" id="roomId" value="test-room" maxlength="64" placeholder="Enter room ID"
+                        title="Room ID">
+                </div>
+                <div class="input-group">
+                    <label for="displayName">Your Name</label>
+                    <input type="text" id="displayName" value="User" maxlength="32" placeholder="Enter your name"
+                        title="Your Name">
+                </div>
+                <button class="btn btn-primary" id="joinBtn" onclick="joinRoom()">Join Room</button>
+            </div>
+
+            <div id="room" style="display:none;">
+                <div class="participants" id="participants">
+                    <div class="peer-tag">You</div>
+                </div>
+                <button class="btn btn-danger" onclick="leaveRoom()">Leave Room</button>
+            </div>
+
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        const WS_URL = 'ws://localhost:8081';
+        const CLIENT_ID = 'client-' + Math.random().toString(36).substr(2, 9);
+
+        let ws = null;
+        let pc = null;
+        let localStream = null;
+        let isLeaving = false;
+        let reconnectAttempt = 0;
+        let reconnectTimer = null;
+
+        function log(msg) {
+            const el = document.getElementById('log');
+            el.textContent += '> ' + msg + '\n';
+            el.scrollTop = el.scrollHeight;
+            console.log('[PionTest]', msg);
+        }
+
+        function setStatus(s) {
+            const el = document.getElementById('status');
+            el.textContent = s.charAt(0).toUpperCase() + s.slice(1);
+            el.className = 'status ' + s;
+        }
+
+        async function joinRoom() {
+            isLeaving = false;
+            const roomId = document.getElementById('roomId').value.trim() || 'test-room';
+            const name = document.getElementById('displayName').value.trim() || 'User';
+            if (!roomId) return;
+
+            document.getElementById('joinBtn').disabled = true;
+            setStatus('connecting');
+            log('Joining room: ' + roomId);
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                log('Microphone acquired');
+            } catch (e) {
+                log('Microphone error: ' + e.message);
+                document.getElementById('joinBtn').disabled = false;
+                setStatus('disconnected');
+                return;
+            }
+
+            connectWS(roomId, name);
+        }
+
+        function connectWS(roomId, name) {
+            cleanupWebRTC();
+
+            const url = `${WS_URL}/ws/voice/room/${roomId}/client/${CLIENT_ID}?name=${encodeURIComponent(name)}`;
+            log('Connecting to ' + url);
+
+            ws = new WebSocket(url);
+
+            ws.onopen = async () => {
+                log('WebSocket connected');
+                reconnectAttempt = 0;
+                setStatus('connected');
+
+                pc = new RTCPeerConnection({
+                    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                });
+
+                localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+                pc.ontrack = (event) => {
+                    log('Remote track: ' + event.track.kind);
+                    const audio = document.createElement('audio');
+                    audio.srcObject = event.streams[0];
+                    audio.autoplay = true;
+                    document.body.appendChild(audio);
+
+                    const peers = document.getElementById('participants');
+                    const tag = document.createElement('span');
+                    tag.className = 'peer-tag';
+                    tag.textContent = 'Peer';
+                    tag.setAttribute('data-track-id', event.track.id);
+                    peers.appendChild(tag);
+                };
+
+                pc.onconnectionstatechange = () => {
+                    log('PC state: ' + pc.connectionState);
+                    if (pc.connectionState === 'failed') {
+                        setStatus('reconnecting');
+                        attemptReconnect();
+                    }
+                };
+
+                try {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    log('Sending offer');
+
+                    ws.send(JSON.stringify({
+                        type: 'offer',
+                        data: { sdp: pc.localDescription.sdp, type: pc.localDescription.type }
+                    }));
+                } catch (e) {
+                    log('Offer error: ' + e.message);
+                }
+            };
+
+            ws.onmessage = async (event) => {
+                const msg = JSON.parse(event.data);
+                log('Received: ' + msg.type);
+
+                switch (msg.type) {
+                    case 'answer':
+                        if (pc && pc.signalingState !== 'stable') {
+                            await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+                            log('Answer applied');
+                            document.getElementById('lobby').style.display = 'none';
+                            document.getElementById('room').style.display = 'block';
+                        }
+                        break;
+
+                    case 'server_offer':
+                        if (pc && pc.signalingState === 'stable') {
+                            await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+                            const answer = await pc.createAnswer();
+                            await pc.setLocalDescription(answer);
+                            ws.send(JSON.stringify({
+                                type: 'client_answer',
+                                data: { sdp: pc.localDescription.sdp, type: pc.localDescription.type }
+                            }));
+                            log('Renegotiation complete');
+                        }
+                        break;
+
+                    case 'error':
+                        log('Server error: ' + msg.message);
+                        break;
+                }
+            };
+
+            ws.onclose = (event) => {
+                log('WS closed: code=' + event.code + ' reason=' + event.reason);
+
+                if (isLeaving) return;
+
+                if (event.code === 1000 || event.code === 4004) {
+                    log('Room closed or expired. Stopping.');
+                    isLeaving = true;
+                    setStatus('disconnected');
+                    return;
+                }
+
+                setStatus('reconnecting');
+                attemptReconnect();
+            };
+
+            ws.onerror = () => log('WS error');
+        }
+
+        function attemptReconnect() {
+            if (isLeaving || reconnectTimer) return;
+
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 16000);
+            reconnectAttempt++;
+            log('Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempt + ')');
+
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                const roomId = document.getElementById('roomId').value.trim() || 'test-room';
+                const name = document.getElementById('displayName').value.trim() || 'User';
+                connectWS(roomId, name);
+            }, delay);
+        }
+
+        function cleanupWebRTC() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            if (ws) {
+                ws.onopen = null;
+                ws.onmessage = null;
+                ws.onclose = null;
+                ws.onerror = null;
+                try { ws.close(); } catch (e) { }
+                ws = null;
+            }
+            if (pc) {
+                pc.onconnectionstatechange = null;
+                pc.ontrack = null;
+                try { pc.close(); } catch (e) { }
+                pc = null;
+            }
+        }
+
+        function leaveRoom() {
+            isLeaving = true;
+            reconnectAttempt = 0;
+
+            if (localStream) {
+                localStream.getTracks().forEach(t => t.stop());
+                localStream = null;
+            }
+            cleanupWebRTC();
+
+            document.getElementById('lobby').style.display = 'block';
+            document.getElementById('room').style.display = 'none';
+            document.getElementById('participants').innerHTML = '<div class="peer-tag">You</div>';
+            document.getElementById('joinBtn').disabled = false;
+            setStatus('disconnected');
+            log('Left room');
+        }
+    </script>
+</body>
+
+</html>

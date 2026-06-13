@@ -473,7 +473,8 @@
 
         <div class="controls">
             <button class="control-btn active" id="micBtn" onclick="toggleMic()">Mic On</button>
-            <button class="control-btn active" id="camBtn" onclick="toggleCam()" style="display:none;">Camera On</button>
+            <button class="control-btn active" id="camBtn" onclick="toggleCam()" style="display:none;">Camera
+                On</button>
             <button class="control-btn danger" onclick="leaveMeeting()">Leave Meeting</button>
         </div>
     </div>
@@ -734,8 +735,6 @@
                     if (state === 'failed') {
                         setConnectionStatus('reconnecting');
                         attemptReconnect();
-                    } else if (state === 'disconnected') {
-                        setConnectionStatus('reconnecting');
                     } else if (state === 'connected') {
                         setConnectionStatus('connected');
                     }
@@ -807,16 +806,46 @@
 
                     case "error":
                         console.error('Server error:', message.message);
+
+                        if (message.message && message.message.includes('Session not found or expired')) {
+                            isLeaving = true;
+                            setConnectionStatus('disconnected');
+                            cleanupWebRTC();
+                        }
                         break;
                 }
             };
 
             ws.onclose = (event) => {
-                if (!isLeaving) {
-                    console.log('WebSocket closed, code:', event.code);
-                    setConnectionStatus('reconnecting');
-                    attemptReconnect();
+                if (isLeaving) {
+                    return;
                 }
+
+                console.log('WebSocket closed, code:', event.code, 'reason:', event.reason);
+
+                if (event.code === 1000 || event.code === 4001 || event.code === 4002) {
+                    console.log('Disconnected normally or rejected by server.');
+                    isLeaving = true;
+                    setConnectionStatus('disconnected');
+                    cleanupWebRTC();
+                    alert(event.reason || 'Disconnected from room.');
+                    window.location.reload();
+                    return;
+                }
+
+                if (event.code === 4004) {
+                    console.log('Room no longer exists.');
+                    isLeaving = true;
+                    setConnectionStatus('disconnected');
+                    cleanupWebRTC();
+                    alert('The session has expired or the room was closed.');
+                    window.location.reload();
+                    return;
+                }
+
+                console.log(`Connection lost (Code ${event.code}). Attempting to reconnect...`);
+                setConnectionStatus('reconnecting');
+                attemptReconnect();
             };
 
             ws.onerror = (err) => {
@@ -830,13 +859,23 @@
         }
 
         function cleanupWebRTC() {
+            if (ws) {
+                ws.onopen = null;
+                ws.onmessage = null;
+                ws.onclose = null;
+                ws.onerror = null;
+                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                    try { ws.close(); } catch (e) { }
+                }
+                ws = null;
+            }
+
             if (pc) {
+                pc.onconnectionstatechange = null;
+                pc.oniceconnectionstatechange = null;
+                pc.ontrack = null;
                 try { pc.close(); } catch (e) { }
                 pc = null;
-            }
-            if (ws) {
-                try { ws.close(); } catch (e) { }
-                ws = null;
             }
         }
 
@@ -888,6 +927,16 @@
                 }));
             } catch (error) {
                 console.error('Failed to process server offer:', error);
+
+                if (error.name === 'InvalidAccessError' ||
+                    (typeof error.message === 'string' && error.message.includes('RTP extension ID reassignment'))) {
+                    console.error('Fatal renegotiation failure detected. Stopping further reconnect and cleanup.');
+                    isLeaving = true;
+                    setReconnectTimer(null, false);
+                    resetConnectionState();
+                    cleanupWebRTC();
+                    setConnectionStatus('disconnected');
+                }
             } finally {
                 isProcessingServerOffer = false;
                 if (serverOfferQueue.length > 0) {

@@ -1,46 +1,110 @@
-# Voice SDK - WebRTC SFU MVP
+# VoiceVidChat SDK — Project Documentation
 
-## Overview
+**Last Updated:** June 9, 2026
+**Status:** MVP (Working)
 
-A voice communication SDK implementing a Selective Forwarding Unit (SFU) architecture for multi-party voice chat using WebRTC.
+---
+
+## What It Is
+
+A **Selective Forwarding Unit (SFU)** for multi-party voice/video chat. The server acts as a relay — clients connect to the server, and it forwards audio/video streams between peers. Supports rooms of up to 4 participants with shareable session codes.
+
+---
 
 ## Tech Stack
 
-- **Backend**: FastAPI (Python) + aiortc        aiortc : open source python library used for web real time comm and object real time comm(webrtc and ortc), is built on top of asyncio, python's standard aysncrhonous I/0 framework, 
-- **Frontend**: HTML/JavaScript
-- **Protocol**: WebRTC with WebSocket signaling
-- **Dependencies**: FastAPI, Uvicorn, Pydantic, python-dotenv, websockets, aiortc
+| Layer | Tech |
+|---|---|
+| Backend | Python, FastAPI, Uvicorn |
+| WebRTC | aiortc (Python), browser WebRTC API |
+| Signaling | WebSockets |
+| Frontend | Vanilla HTML/CSS/JS (no frameworks) |
+| NAT Traversal | STUN (Google) + TURN (Metered.ca) — in test2.html |
+
+---
+
+## Architecture
+
+```
+Client → WebSocket → FastAPI Server → SFU Service (MediaRelay) → Other Clients
+                                     → Session Manager (rooms, cleanup)
+```
+
+### Key Components
+
+- **`backend/app/routes/signaling.py`** — WebSocket endpoint for WebRTC SDP exchange
+- **`backend/app/routes/sessions.py`** — REST API for create/join/validate rooms
+- **`backend/app/services/sfu_service.py`** — Core SFU: peer connections, MediaRelay track forwarding, renegotiation
+- **`backend/app/services/session_manager.py`** — Room lifecycle: creation, zombie cleanup (8s grace), 60-min TTL, max 4 peers
+- **`frontend/`** — Voice room client (dark theme, responsive)
+- **`test2.html`** — Full-featured video+audio client with create/join UI
+
+### API Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `POST` | `/api/sessions/create` | Create session → returns share code |
+| `POST` | `/api/sessions/validate` | Validate session before joining |
+| `POST` | `/api/sessions/join/{id}` | Confirm join |
+| `WS` | `/ws/voice/room/{sid}/client/{cid}` | Real-time signaling |
+
+---
+
+## What's Working ✅
+
+- SFU audio relay between up to 4 peers using aiortc MediaRelay
+- Session create/validate/join flow with 12-char share codes
+- Dynamic renegotiation when peers join/leave (server sends new offers)
+- Heartbeat ping/pong with 30s timeout
+- Zombie room teardown (graceful shutdown when room empties)
+- Session expiry & cleanup (60-min TTL)
+- Mute toggle broadcasting
+- Frontend: responsive dark UI with listening indicator, timer, mic controls
+- Video room type supported in backend (test2.html client works with video)
+
+---
+
+## In Progress / Known Gaps 🚧
+
+- **Main frontend (`frontend/index.html`) is audio-only** — doesn't request video from camera
+- **Mute state not synced** — toggle goes to server but frontend doesn't listen for `user_muted` events
+- **No TURN config in main frontend** — only `test2.html` has NAT traversal fallback
+- **Camera/Settings/Screenshare buttons** — stubs, not functional yet
+- **No auth** — anyone can join with any name
+- **In-memory only** — no database; server restart loses all sessions
+- **No TLS** — runs on raw HTTP/WS (port 8080)
+- **Video bugs being fixed** (per latest commit)
+
+---
 
 ## Project Structure
 
 ```
-├── backend/              # FastAPI server
-│   ├── main.py          # App initialization & routes setup
-│   ├── config/          # Configuration settings
-│   ├── routes/          # WebSocket signaling endpoints
-│   ├── services/        # SFU service (room & peer management)
-│   └── models/          # Data schemas
-├── testclient.html      # Client test interface
-└── requirements.txt     # Python dependencies
+voicevidchat sdk/
+├── backend/              # Main backend (current, feature-complete)
+│   └── app/
+│       ├── main.py
+│       ├── routes/       # signaling.py, sessions.py
+│       ├── services/     # sfu_service.py, session_manager.py
+│       ├── models/       # schema.py
+│       └── config/       # config.py
+├── backend-backup/       # Older prototype (simpler, no sessions/renegotiation)
+├── frontend/             # Voice client (index.html, script.js, style.css)
+├── test1.html            # Minimal smoke-test client
+├── test2.html            # Full video+audio client with create/join UI
+└── README.md             # Detailed architecture docs with diagrams
 ```
 
-## Key Features
+---
 
-- **Voice Rooms**: Multiple users join named rooms
-- **SFU Architecture**: Server relays audio tracks between peers (not direct P2P)
-- **WebSocket Signaling**: Real-time SDP offer/answer exchange
-- **Dynamic Peer Management**: Automatic room cleanup when empty
-- **CORS Enabled**: Ready for cross-origin requests
+## Running
 
-## How It Works
+```bash
+cd backend
+pip install -r requirements.txt
+python -m app.main
+# Server starts at http://0.0.0.0:8080
+```
 
-1. Client joins WebSocket: `/ws/voice/room/{room_id}/client/{client_id}`
-2. Client sends WebRTC offer
-3. Server creates RTCPeerConnection & generates answer
-4. Audio tracks are relayed through server to other peers
-5. On disconnect, peer is removed and room cleaned up
-
-## API Endpoints
-
-- `GET /health` - Health check
-- `WebSocket /ws/voice/room/{room_id}/client/{client_id}` - Signaling
+Open `frontend/index.html` (voice only) or `test2.html` (video+voice) in browser.
