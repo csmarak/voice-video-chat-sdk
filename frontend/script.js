@@ -1,21 +1,20 @@
 // ============================================================
-// VoiceVidChat — Full Lobby + Room Client
+// VoiceVidChat — LiveKit-Powered Client
 // ============================================================
 
-const SERVER = `http://localhost:8081`;
+const SERVER = window.location.origin;
 let roomType = 'voice';
 let roomCode = '';
-let myClientID = '';
+let myIdentity = '';
 let myDisplayName = '';
 
-let ws = null;
-let pc = null;
+let livekitRoom = null;
 let localStream = null;
 let isMicOn = true;
 let isCamOn = false;
 let connected = false;
 
-let peers = {}; // clientID -> { displayName, isMuted, audioEl?, videoEl? }
+let participants = {};
 let timerInterval = null;
 let elapsedSeconds = 0;
 
@@ -68,7 +67,7 @@ document.getElementById('createBtn').addEventListener('click', async () => {
 
         roomCode = data.code;
         myDisplayName = username;
-        myClientID = username + '-' + Math.random().toString(36).slice(2, 8);
+        myIdentity = username + '-' + Math.random().toString(36).slice(2, 8);
 
         showView('roomView');
         document.getElementById('roomCodeDisplay').textContent = roomCode;
@@ -83,7 +82,7 @@ document.getElementById('createBtn').addEventListener('click', async () => {
             isCamOn = false;
         }
 
-        connectWebSocket();
+        await connectToLiveKit();
     } catch (e) {
         toast(e.message, true);
     }
@@ -120,7 +119,7 @@ document.getElementById('joinBtn').addEventListener('click', async () => {
         roomType = data.room_type;
         roomCode = code;
         myDisplayName = username;
-        myClientID = username + '-' + Math.random().toString(36).slice(2, 8);
+        myIdentity = username + '-' + Math.random().toString(36).slice(2, 8);
 
         const joinRes = await fetch(`${SERVER}/api/sessions/join/${code}`, {
             method: 'POST',
@@ -143,17 +142,17 @@ document.getElementById('joinBtn').addEventListener('click', async () => {
             isCamOn = false;
         }
 
-        connectWebSocket();
+        await connectToLiveKit();
     } catch (e) {
         toast(e.message, true);
     }
 });
 
 // ============================================================
-// WebSocket + WebRTC
+// LiveKit Connection
 // ============================================================
 
-async function connectWebSocket() {
+async function connectToLiveKit() {
     try {
         const constraints = roomType === 'video'
             ? { audio: true, video: { width: { ideal: 640 }, height: { ideal: 480 } } }
@@ -164,161 +163,158 @@ async function connectWebSocket() {
         return;
     }
 
-    const wsUrl = `ws://localhost:8081/ws/room/${roomCode}/client/${myClientID}?display_name=${encodeURIComponent(myDisplayName)}`;
-    ws = new WebSocket(wsUrl);
+    // Get LiveKit token from our server
+    let livekitURL = 'ws://localhost:7880';
+    let token = '';
+    try {
+        const tokenRes = await fetch(`${SERVER}/api/livekit/token`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                code: roomCode,
+                identity: myIdentity,
+                display_name: myDisplayName,
+            })
+        });
+        const tokenData = await tokenRes.json();
+        if (!tokenRes.ok) throw new Error(tokenData.error || 'Failed to get token');
+        token = tokenData.token;
+        if (tokenData.url) livekitURL = tokenData.url;
+    } catch (e) {
+        toast('Failed to get join token: ' + e.message, true);
+        return;
+    }
 
-    ws.onopen = async () => {
-        pc = new RTCPeerConnection();
-        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    // Detect if we're on HTTPS — can't use ws:// from HTTPS page
+    const isHTTPS = window.location.protocol === 'https:';
+    if (isHTTPS && livekitURL.startsWith('ws://')) {
+        toast('For phone testing: open http://' + window.location.hostname + ':8081 instead of ngrok URL', true);
+    }
 
-        pc.ontrack = (event) => {
-            const stream = event.streams[0];
-            if (!stream) return;
-            const participantID = stream.id || 'unknown';
-
-            if (!peers[participantID]) {
-                peers[participantID] = { displayName: undefined, isMuted: false };
-            }
-
-            if (event.track.kind === 'audio') {
-                const audioEl = document.createElement('audio');
-                audioEl.srcObject = stream;
-                audioEl.autoplay = true;
-                audioEl.style.display = 'none';
-                document.body.appendChild(audioEl);
-                peers[participantID].audioEl = audioEl;
-            } else if (event.track.kind === 'video') {
-                peers[participantID].videoEl = stream;
-            }
-            renderGrid();
-        };
-
-        pc.oniceconnectionstatechange = () => {
-            if (pc && (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected')) {
-                console.warn('ICE state:', pc.iceConnectionState);
-            }
-        };
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        ws.send(JSON.stringify({ type: 'offer', data: { sdp: pc.localDescription.sdp, type: 'offer' } }));
-    };
-
-    ws.onmessage = async (event) => {
-        let msg;
-        try { msg = JSON.parse(event.data); } catch { return; }
-
-        switch (msg.type) {
-            case 'answer':
-                await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-                connected = true;
-                updateRoomControls();
-                startTimer();
-                break;
-
-            case 'server_offer':
-                try {
-                    await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-                } catch (e) {
-                    if (e.name === 'InvalidStateError') {
-                        console.warn('server_offer ignored — already in negotiation:', pc.signalingState);
-                        break;
-                    }
-                    throw e;
-                }
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                ws.send(JSON.stringify({ type: 'client_answer', data: { sdp: pc.localDescription.sdp, type: 'answer' } }));
-                break;
-
-            case 'room_state':
-                handleRoomState(msg.data);
-                break;
-
-            case 'user_joined':
-                handleUserJoined(msg.data);
-                break;
-
-            case 'user_left':
-                handleUserLeft(msg.data);
-                break;
-
-            case 'user_muted':
-                handleUserMuted(msg.data);
-                break;
-
-            case 'ping':
-                ws.send(JSON.stringify({ type: 'pong' }));
-                break;
-
-            case 'error':
-                toast(msg.message || 'Server error', true);
-                if (msg.message === 'room is full (max 4 peers)') {
-                    setTimeout(leaveRoom, 1000);
-                }
-                break;
-        }
-    };
-
-    ws.onerror = () => toast('Connection error', true);
-    ws.onclose = (e) => {
-        if (connected) {
-            toast('Disconnected from room', true);
-        }
-        resetRoom();
-    };
-}
-
-// ============================================================
-// Room State & Participants
-// ============================================================
-
-function handleRoomState(data) {
-    const newPeers = {};
-    (data.users || []).forEach(u => {
-        if (u.client_id !== myClientID) {
-            const existing = peers[u.client_id];
-            newPeers[u.client_id] = {
-                displayName: u.display_name || 'Peer',
-                isMuted: u.is_muted || false,
-                audioEl: existing ? existing.audioEl : undefined,
-                videoEl: existing ? existing.videoEl : undefined,
-            };
-        }
+    // Connect to LiveKit
+    livekitRoom = new LivekitClient.Room({
+        adaptiveStream: true,
+        dynacast: true,
     });
-    peers = newPeers;
-    renderGrid();
-}
 
-function handleUserJoined(data) {
-    if (data.client_id === myClientID) return;
-    const existing = peers[data.client_id];
-    peers[data.client_id] = {
-        displayName: data.display_name || 'Peer',
-        isMuted: false,
-        audioEl: existing ? existing.audioEl : undefined,
-        videoEl: existing ? existing.videoEl : undefined,
-    };
-    renderGrid();
-    toast(`${data.display_name} joined`, false);
-}
-
-function handleUserLeft(data) {
-    if (peers[data.client_id]) {
-        if (peers[data.client_id].audioEl) {
-            peers[data.client_id].audioEl.srcObject = null;
-            peers[data.client_id].audioEl.remove();
-        }
-        delete peers[data.client_id];
-    }
-    renderGrid();
-}
-
-function handleUserMuted(data) {
-    if (peers[data.client_id]) {
-        peers[data.client_id].isMuted = data.muted;
+    livekitRoom.on('participantConnected', (participant) => {
+        console.log('Participant connected:', participant.identity);
+        participants[participant.identity] = {
+            displayName: participant.name || participant.identity,
+            isMuted: false,
+            audioEl: null,
+            videoEl: null,
+        };
         renderGrid();
+
+        // tracks are subscribed after participantConnected fires,
+        // handled by the trackSubscribed listener below
+        participant.on('trackSubscribed', (track) => {
+            handleTrackSubscribed(track, participant);
+        });
+        participant.on('trackUnsubscribed', (track) => {
+            handleTrackUnsubscribed(track, participant);
+        });
+        participant.on('trackMuted', (track) => {
+            if (track.kind === 'audio' && participants[participant.identity]) {
+                participants[participant.identity].isMuted = true;
+                renderGrid();
+            }
+        });
+        participant.on('trackUnmuted', (track) => {
+            if (track.kind === 'audio' && participants[participant.identity]) {
+                participants[participant.identity].isMuted = false;
+                renderGrid();
+            }
+        });
+    });
+
+    livekitRoom.on('participantDisconnected', (participant) => {
+        console.log('Participant disconnected:', participant.identity);
+        if (participants[participant.identity]) {
+            if (participants[participant.identity].audioEl) {
+                participants[participant.identity].audioEl.remove();
+            }
+            delete participants[participant.identity];
+        }
+        renderGrid();
+    });
+
+    livekitRoom.on('connected', () => {
+        console.log('Connected to LiveKit room');
+        connected = true;
+        updateRoomControls();
+        startTimer();
+
+        // Publish local tracks
+        localStream.getAudioTracks().forEach(t => {
+            livekitRoom.localParticipant.publishTrack(t, { source: LivekitClient.Track.Source.Microphone });
+        });
+        if (roomType === 'video') {
+            localStream.getVideoTracks().forEach(t => {
+                livekitRoom.localParticipant.publishTrack(t, { source: LivekitClient.Track.Source.Camera });
+            });
+        }
+
+        // Show self tile
+        renderGrid();
+    });
+
+    livekitRoom.on('disconnected', () => {
+        console.log('Disconnected from LiveKit');
+        toast('Disconnected from room', true);
+        resetRoom();
+    });
+
+    try {
+        await livekitRoom.connect(livekitURL, token);
+    } catch (e) {
+        toast('Failed to connect: ' + e.message, true);
+        resetRoom();
     }
+}
+
+function handleTrackSubscribed(track, participant) {
+    if (!participants[participant.identity]) {
+        participants[participant.identity] = {
+            displayName: participant.name || participant.identity,
+            isMuted: false,
+            audioEl: null,
+            videoEl: null,
+        };
+    }
+
+    // LiveKit SDK tracks are RemoteTrack objects — use .mediaStreamTrack
+    const mediaStreamTrack = track.mediaStreamTrack || track;
+
+    if (mediaStreamTrack.kind === 'audio') {
+        const audioEl = document.createElement('audio');
+        audioEl.srcObject = new MediaStream([mediaStreamTrack]);
+        audioEl.autoplay = true;
+        audioEl.style.display = 'none';
+        document.body.appendChild(audioEl);
+        // Explicitly play to bypass browser autoplay restrictions
+        audioEl.play().catch(e => console.warn('Audio play failed:', e.message));
+        participants[participant.identity].audioEl = audioEl;
+    } else if (mediaStreamTrack.kind === 'video') {
+        const stream = new MediaStream([mediaStreamTrack]);
+        participants[participant.identity].videoEl = stream;
+    }
+    renderGrid();
+}
+
+function handleTrackUnsubscribed(track, participant) {
+    if (track.kind === 'audio' && participants[participant.identity]) {
+        if (participants[participant.identity].audioEl) {
+            participants[participant.identity].audioEl.remove();
+        }
+        participants[participant.identity].audioEl = null;
+    } else if (track.kind === 'video') {
+        if (participants[participant.identity]) {
+            participants[participant.identity].videoEl = null;
+        }
+    }
+    renderGrid();
 }
 
 // ============================================================
@@ -330,7 +326,7 @@ function renderGrid() {
     grid.innerHTML = '';
 
     // Self tile
-    const selfTile = createTile(myClientID, myDisplayName, true, isMicOn, isCamOn);
+    const selfTile = createTile(myIdentity, myDisplayName, true, isMicOn, isCamOn);
     grid.appendChild(selfTile);
     if (isCamOn && localStream) {
         setTimeout(() => {
@@ -340,7 +336,7 @@ function renderGrid() {
     }
 
     // Peer tiles
-    Object.entries(peers).forEach(([id, p]) => {
+    Object.entries(participants).forEach(([id, p]) => {
         const tile = createTile(id, p.displayName, false, !p.isMuted, !!p.videoEl);
         grid.appendChild(tile);
         if (p.videoEl) {
@@ -392,11 +388,11 @@ function updateRoomControls() {
 
 document.getElementById('roomMicBtn').addEventListener('click', () => {
     isMicOn = !isMicOn;
+    if (livekitRoom && livekitRoom.localParticipant) {
+        livekitRoom.localParticipant.setMicrophoneEnabled(isMicOn);
+    }
     if (localStream) {
         localStream.getAudioTracks().forEach(t => t.enabled = isMicOn);
-    }
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'toggle_mute', data: { muted: !isMicOn } }));
     }
     updateRoomControls();
     renderGrid();
@@ -404,6 +400,9 @@ document.getElementById('roomMicBtn').addEventListener('click', () => {
 
 document.getElementById('roomCamBtn').addEventListener('click', () => {
     isCamOn = !isCamOn;
+    if (livekitRoom && livekitRoom.localParticipant) {
+        livekitRoom.localParticipant.setCameraEnabled(isCamOn);
+    }
     if (localStream) {
         localStream.getVideoTracks().forEach(t => t.enabled = isCamOn);
     }
@@ -419,8 +418,8 @@ document.getElementById('roomLeaveBtn').addEventListener('click', leaveRoom);
 
 function leaveRoom() {
     stopTimer();
-    if (ws) {
-        try { ws.close(); } catch {}
+    if (livekitRoom) {
+        livekitRoom.disconnect();
     }
     resetRoom();
     showView('lobbyView');
@@ -429,11 +428,10 @@ function leaveRoom() {
 function resetRoom() {
     connected = false;
     stopTimer();
-    if (pc) { pc.close(); pc = null; }
+    if (livekitRoom) { livekitRoom = null; }
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-    Object.values(peers).forEach(p => { if (p.audioEl) { p.audioEl.srcObject = null; p.audioEl.remove(); } });
-    peers = {};
-    ws = null;
+    Object.values(participants).forEach(p => { if (p.audioEl) { p.audioEl.srcObject = null; p.audioEl.remove(); } });
+    participants = {};
     document.getElementById('participantGrid').innerHTML = '';
 }
 

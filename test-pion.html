@@ -288,6 +288,19 @@
                     }
                 };
 
+                // Trickle ICE: send candidates to the server as they're gathered
+                pc.onicecandidate = (event) => {
+                    if (!event.candidate) return;
+                    ws.send(JSON.stringify({
+                        type: 'ice_candidate',
+                        data: {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex,
+                        }
+                    }));
+                };
+
                 try {
                     const offer = await pc.createOffer();
                     await pc.setLocalDescription(offer);
@@ -313,6 +326,16 @@
                             log('Answer applied');
                             document.getElementById('lobby').style.display = 'none';
                             document.getElementById('room').style.display = 'block';
+                        }
+                        break;
+
+                    case 'ice_candidate':
+                        if (pc && pc.remoteDescription && msg.data && msg.data.candidate) {
+                            try {
+                                await pc.addIceCandidate(msg.data);
+                            } catch (err) {
+                                log('ICE candidate add failed: ' + err.message);
+                            }
                         }
                         break;
 

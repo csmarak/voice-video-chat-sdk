@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiveKit Test</title>
+</head>
+<body>
+    <h2>LiveKit Test</h2>
+    <div>
+        <input id="code" placeholder="Room code" value="">
+        <input id="name" placeholder="Your name" value="User">
+        <button onclick="create()">Create</button>
+        <button onclick="join()">Join</button>
+        <button onclick="leave()">Leave</button>
+    </div>
+    <div id="status"></div>
+    <div id="log" style="white-space:pre-wrap;font-family:mono;font-size:12px;margin-top:10px;"></div>
+    <div id="tiles" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:20px;"></div>
+
+    <script src="livekit-client.min.js"></script>
+    <script>
+        const SERVER = window.location.origin;
+        let room, localStream;
+
+        function log(msg) { document.getElementById('log').textContent += msg + '\n'; }
+        function status(s) { document.getElementById('status').textContent = s; }
+
+        async function create() {
+            const name = document.getElementById('name').value.trim() || 'User';
+            const res = await fetch(SERVER + '/api/sessions/create', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({room_type: 'video', username: name})
+            });
+            const data = await res.json();
+            if (!res.ok) { log('create error: ' + data.error); return; }
+            document.getElementById('code').value = data.code;
+            log('created room: ' + data.code);
+        }
+
+        async function join() {
+            const code = document.getElementById('code').value.trim();
+            const name = document.getElementById('name').value.trim();
+            if (!code) return;
+
+            status('getting media...');
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                log('got media');
+            } catch(e) { log('media error: ' + e.message); return; }
+
+            status('getting token...');
+            const identity = name + '-' + Math.random().toString(36).slice(2,6);
+            const res = await fetch(SERVER + '/api/livekit/token', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({code, identity, display_name: name})
+            });
+            const data = await res.json();
+            if (!res.ok) { log('token error: ' + data.error); return; }
+            log('got token, url=' + data.url);
+
+            status('connecting...');
+            room = new LivekitClient.Room();
+            room.on('connected', () => {
+                log('connected!');
+                status('connected');
+                localStream.getAudioTracks().forEach(t => room.localParticipant.publishTrack(t));
+                localStream.getVideoTracks().forEach(t => room.localParticipant.publishTrack(t));
+            });
+            room.on('participantConnected', p => {
+                log('peer joined: ' + p.identity);
+                p.on('trackSubscribed', track => {
+                    log('got track: ' + track.kind + ' from ' + p.identity);
+                    const el = document.createElement(track.kind === 'audio' ? 'audio' : 'video');
+                    el.srcObject = new MediaStream([track.mediaStreamTrack || track]);
+                    el.autoplay = true;
+                    if (track.kind === 'audio') el.style.display = 'none';
+                    document.getElementById('tiles').appendChild(el);
+                    el.play().catch(e => {});
+                });
+            });
+            room.on('participantDisconnected', p => log('peer left: ' + p.identity));
+            room.on('disconnected', () => { log('disconnected'); status(''); });
+
+            try {
+                await room.connect(data.url, data.token);
+                log('room.connect completed');
+            } catch(e) { log('connect error: ' + e.message); }
+        }
+
+        function leave() {
+            if (room) room.disconnect();
+            if (localStream) localStream.getTracks().forEach(t => t.stop());
+            document.getElementById('tiles').innerHTML = '';
+            log('left');
+        }
+    </script>
+</body>
+</html>

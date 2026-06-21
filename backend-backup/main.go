@@ -233,6 +233,11 @@ func main() {
 	mux.HandleFunc("POST /api/sessions/join/{code}", handleJoinSession)
 	mux.HandleFunc("GET /ws/room/{code}/client/{clientID}", handleSignaling)
 
+	// Serve frontend static files — must be last (catch-all handler).
+	// API and WebSocket routes take precedence in Go 1.22+ ServeMux.
+	fileServer := http.FileServer(http.Dir("../frontend"))
+	mux.Handle("/", fileServer)
+
 	handler := corsMiddleware(mux)
 
 	go func() {
@@ -422,7 +427,7 @@ func handleSignaling(w http.ResponseWriter, r *http.Request) {
 		_, msgBytes, err := ws.ReadMessage()
 		if err != nil {
 			log.Printf("[Server] Read error from %s: %v", clientID, err)
-			sfu.RemovePeer(code, clientID)
+			sfu.RemovePeerForConnection(code, clientID, ws)
 			store.ReleaseSlot(code)
 			return
 		}
@@ -444,12 +449,14 @@ func handleSignaling(w http.ResponseWriter, r *http.Request) {
 					"type":    "error",
 					"message": err.Error(),
 				})
-				sfu.RemovePeer(code, clientID)
+				sfu.RemovePeerForConnection(code, clientID, ws)
 				store.ReleaseSlot(code)
 				return
 			}
 		case "client_answer":
 			sfu.HandleClientAnswer(code, clientID, data)
+		case "ice_candidate":
+			sfu.HandleIceCandidate(code, clientID, data)
 		case "pong":
 			sfu.HandlePong(code, clientID)
 		case "toggle_mute":

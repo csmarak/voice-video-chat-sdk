@@ -7,8 +7,38 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 )
+
+// api is the singleton WebRTC API with Pion's built-in interceptor pipeline:
+// NACK responder/receiver, sender/receiver reports, and TWCC.
+var api *webrtc.API
+
+func init() {
+	var err error
+	api, err = createWebRTCAPI()
+	if err != nil {
+		log.Fatalf("[SFU] Failed to create WebRTC API: %v", err)
+	}
+}
+
+func createWebRTCAPI() (*webrtc.API, error) {
+	m := &webrtc.MediaEngine{}
+	if err := m.RegisterDefaultCodecs(); err != nil {
+		return nil, err
+	}
+
+	ir := &interceptor.Registry{}
+	if err := webrtc.RegisterDefaultInterceptors(m, ir); err != nil {
+		return nil, err
+	}
+
+	return webrtc.NewAPI(
+		webrtc.WithMediaEngine(m),
+		webrtc.WithInterceptorRegistry(ir),
+	), nil
+}
 
 const (
 	MaxPeersPerRoom    = 4
@@ -39,6 +69,9 @@ type Peer struct {
 	IsMuted     atomic.Bool
 	lastPong    atomic.Int64
 	alive       atomic.Bool
+	mu          sync.Mutex
+	disconnectTimer *time.Timer
+	negTimer    *time.Timer
 }
 
 type SFU struct {
@@ -128,7 +161,7 @@ func (s *SFU) startHeartbeat(roomID string, peer *Peer) {
 			err := peer.SendJSON(map[string]interface{}{"type": "ping"})
 			if err != nil {
 				log.Printf("[SFU] Heartbeat send failed for %s", peer.ID)
-				s.RemovePeer(roomID, peer.ID)
+				s.RemovePeerIfMatching(roomID, peer.ID, peer)
 				return
 			}
 		}
@@ -142,11 +175,74 @@ func (s *SFU) startHeartbeat(roomID string, peer *Peer) {
 			}
 			if time.Now().UnixMilli()-peer.lastPong.Load() > int64(HeartbeatTimeout/time.Millisecond) {
 				log.Printf("[SFU] Heartbeat timeout for %s", peer.ID)
-				s.RemovePeer(roomID, peer.ID)
+				s.RemovePeerIfMatching(roomID, peer.ID, peer)
 				return
 			}
 		}
 	}()
+}
+
+// RemovePeerIfMatching protects active sessions from being murdered by ghost timers.
+// It only removes the peer if the instance currently in the room's Peers map matches
+// the exact memory address of the tracking goroutine's peer reference.
+func (s *SFU) RemovePeerIfMatching(roomID, clientID string, checkingPeer *Peer) {
+	room, ok := s.Rooms[roomID]
+	if !ok {
+		return
+	}
+
+	room.mu.Lock()
+	currentActivePeer, exists := room.Peers[clientID]
+
+	// CRITICAL GUARD: Only delete if the peer in the map is the EXACT same
+	// object instance as the one this goroutine was tracking.
+	if exists && currentActivePeer == checkingPeer {
+		checkingPeer.alive.Store(false)
+
+		checkingPeer.mu.Lock()
+		if checkingPeer.disconnectTimer != nil {
+			checkingPeer.disconnectTimer.Stop()
+			checkingPeer.disconnectTimer = nil
+		}
+		if checkingPeer.negTimer != nil {
+			checkingPeer.negTimer.Stop()
+			checkingPeer.negTimer = nil
+		}
+		checkingPeer.mu.Unlock()
+
+		delete(room.Peers, clientID)
+		peerCount := len(room.Peers)
+		room.mu.Unlock()
+
+		log.Printf("[SFU-Guard] Safe-evicted timed out session for %s (%d left)", clientID, peerCount)
+
+		if checkingPeer.PC != nil {
+			_ = checkingPeer.PC.Close()
+		}
+		checkingPeer.wsMu.Lock()
+		_ = checkingPeer.WS.Close()
+		checkingPeer.wsMu.Unlock()
+
+		s.broadcastToRoomLocked(room, clientID, map[string]interface{}{
+			"type": "user_left",
+			"data": map[string]interface{}{
+				"client_id":    clientID,
+				"display_name": checkingPeer.DisplayName,
+			},
+		})
+		s.broadcastRoomState(room)
+
+		if peerCount == 0 {
+			s.mu.Lock()
+			delete(s.Rooms, roomID)
+			s.mu.Unlock()
+			log.Printf("[SFU] Room %s destroyed (empty)", roomID)
+		}
+	} else {
+		// The ghost loop woke up, but a new valid connection took the slot!
+		room.mu.Unlock()
+		log.Printf("[SFU-Guard] Aborted ghost eviction. Valid active session detected for %s", clientID)
+	}
 }
 
 // ============================================================
@@ -166,6 +262,18 @@ func (s *SFU) RemovePeer(roomID, clientID string) {
 		return
 	}
 	peer.alive.Store(false)
+
+	peer.mu.Lock()
+	if peer.disconnectTimer != nil {
+		peer.disconnectTimer.Stop()
+		peer.disconnectTimer = nil
+	}
+	if peer.negTimer != nil {
+		peer.negTimer.Stop()
+		peer.negTimer = nil
+	}
+	peer.mu.Unlock()
+
 	delete(room.Peers, clientID)
 	peerCount := len(room.Peers)
 	room.mu.Unlock()
@@ -192,6 +300,35 @@ func (s *SFU) RemovePeer(roomID, clientID string) {
 		s.mu.Unlock()
 		log.Printf("[SFU] Room %s destroyed (empty)", roomID)
 	}
+}
+
+// RemovePeerForConnection only removes the peer if its WebSocket matches the
+// one passed in. This prevents a stale handleSignaling goroutine from nuking
+// a new peer that reconnected under the same clientID.
+func (s *SFU) RemovePeerForConnection(roomID, clientID string, ws *websocket.Conn) {
+	room, ok := s.Rooms[roomID]
+	if !ok {
+		return
+	}
+
+	room.mu.Lock()
+	peer, ok := room.Peers[clientID]
+	if !ok {
+		room.mu.Unlock()
+		return
+	}
+
+	// The peer's WS doesn't match — a new connection with the same
+	// clientID has already taken over. Leave it alone.
+	if peer.WS != ws {
+		room.mu.Unlock()
+		log.Printf("[SFU] Stale handleSignaling for %s aborted (WS mismatch)", clientID)
+		return
+	}
+	room.mu.Unlock()
+
+	// WS matches — proceed with normal removal
+	s.RemovePeer(roomID, clientID)
 }
 
 // ============================================================
@@ -278,30 +415,58 @@ func (s *SFU) forwardTrackToPeer(peer *Peer, track *webrtc.TrackRemote, sourceCl
 	return nil
 }
 
-func (s *SFU) setupOnNegotiationNeeded(peer *Peer) {
-	peer.PC.OnNegotiationNeeded(func() {
-		if peer.PC.SignalingState() != webrtc.SignalingStateStable {
+func (p *Peer) SignalNegotiation() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Batching debounce — reset the timer on every call so multiple
+	// adjacent track additions coalesce into a single SDP offer.
+	if p.negTimer != nil {
+		p.negTimer.Stop()
+	}
+
+	p.negTimer = time.AfterFunc(100*time.Millisecond, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		if p.PC == nil {
 			return
 		}
-		offer, err := peer.PC.CreateOffer(nil)
+		if p.PC.SignalingState() != webrtc.SignalingStateStable {
+			// Ongoing negotiation — retry after it settles
+			p.negTimer = time.AfterFunc(100*time.Millisecond, func() {
+				p.SignalNegotiation()
+			})
+			return
+		}
+
+		offer, err := p.PC.CreateOffer(nil)
 		if err != nil {
-			log.Printf("[SFU] CreateOffer error for %s: %v", peer.ID, err)
+			log.Printf("[SFU] CreateOffer error for %s: %v", p.ID, err)
 			return
 		}
-		if err = peer.PC.SetLocalDescription(offer); err != nil {
-			log.Printf("[SFU] SetLocalDescription error for %s: %v", peer.ID, err)
+		if err = p.PC.SetLocalDescription(offer); err != nil {
+			log.Printf("[SFU] SetLocalDescription error for %s: %v", p.ID, err)
 			return
 		}
-		<-webrtc.GatheringCompletePromise(peer.PC)
-		if err := peer.SendJSON(map[string]interface{}{
+		// Trickle ICE: send the offer immediately without waiting for
+		// full candidate gathering. ICE candidates will be trickled
+		// by the OnICECandidate handler registered on this PC.
+		if err := p.SendJSON(map[string]interface{}{
 			"type": "server_offer",
 			"data": map[string]interface{}{
-				"sdp":  peer.PC.LocalDescription().SDP,
+				"sdp":  p.PC.LocalDescription().SDP,
 				"type": "offer",
 			},
 		}); err != nil {
-			log.Printf("[SFU] Renegotiation send failed for %s: %v", peer.ID, err)
+			log.Printf("[SFU] Renegotiation send failed for %s: %v", p.ID, err)
 		}
+	})
+}
+
+func (s *SFU) setupOnNegotiationNeeded(peer *Peer) {
+	peer.PC.OnNegotiationNeeded(func() {
+		peer.SignalNegotiation()
 	})
 }
 
@@ -328,6 +493,40 @@ func (s *SFU) HandleClientAnswer(roomID, clientID string, answerDict map[string]
 	}
 	if err := peer.PC.SetRemoteDescription(answer); err != nil {
 		log.Printf("[SFU] Failed to set remote answer for %s: %v", clientID, err)
+	}
+}
+
+// ============================================================
+// HandleIceCandidate (Trickle ICE)
+// ============================================================
+
+func (s *SFU) HandleIceCandidate(roomID, clientID string, candidateDict map[string]interface{}) {
+	room, ok := s.Rooms[roomID]
+	if !ok {
+		return
+	}
+	room.mu.RLock()
+	peer, ok := room.Peers[clientID]
+	room.mu.RUnlock()
+	if !ok || peer.PC == nil {
+		return
+	}
+
+	candidateStr, _ := candidateDict["candidate"].(string)
+	if candidateStr == "" {
+		return
+	}
+	sdpMid, _ := candidateDict["sdpMid"].(string)
+	mlIndexFloat, _ := candidateDict["sdpMLineIndex"].(float64)
+	mlIndex := uint16(mlIndexFloat)
+
+	init := webrtc.ICECandidateInit{
+		Candidate:     candidateStr,
+		SDPMid:        &sdpMid,
+		SDPMLineIndex: &mlIndex,
+	}
+	if err := peer.PC.AddICECandidate(init); err != nil {
+		log.Printf("[SFU] Failed to add ICE candidate for %s: %v", clientID, err)
 	}
 }
 
@@ -377,7 +576,7 @@ func (s *SFU) HandleOffer(roomID, roomType, clientID, displayName string, offerD
 		return ErrorRoomFull
 	}
 
-	pc, err := webrtc.NewPeerConnection(peerConfig)
+	pc, err := api.NewPeerConnection(peerConfig)
 	if err != nil {
 		return err
 	}
@@ -385,6 +584,29 @@ func (s *SFU) HandleOffer(roomID, roomType, clientID, displayName string, offerD
 	peer := &Peer{ID: clientID, DisplayName: displayName, PC: pc, WS: ws, Room: room}
 
 	s.setupOnNegotiationNeeded(peer)
+
+	// Trickle ICE: relay candidates to the client as they're gathered
+	// instead of waiting for GatheringCompletePromise.
+	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
+		if candidate == nil {
+			return // gathering complete
+		}
+		init := candidate.ToJSON()
+		var mlIndex int
+		if init.SDPMLineIndex != nil {
+			mlIndex = int(*init.SDPMLineIndex)
+		}
+		if err := peer.SendJSON(map[string]interface{}{
+			"type": "ice_candidate",
+			"data": map[string]interface{}{
+				"candidate":     init.Candidate,
+				"sdpMid":        init.SDPMid,
+				"sdpMLineIndex": mlIndex,
+			},
+		}); err != nil {
+			log.Printf("[SFU] Failed to send ICE candidate to %s: %v", clientID, err)
+		}
+	})
 
 	room.mu.RLock()
 	for _, p := range room.Peers {
@@ -429,10 +651,29 @@ func (s *SFU) HandleOffer(roomID, roomType, clientID, displayName string, offerD
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("[SFU] Peer %s connection state: %s", clientID, state)
-		if state == webrtc.PeerConnectionStateFailed ||
-			state == webrtc.PeerConnectionStateClosed ||
-			state == webrtc.PeerConnectionStateDisconnected {
-			s.RemovePeer(roomID, clientID)
+		switch state {
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			s.RemovePeerIfMatching(roomID, clientID, peer)
+		case webrtc.PeerConnectionStateDisconnected:
+			// Grace period — mobile networks frequently glitch for 3-5s
+			peer.mu.Lock()
+			if peer.disconnectTimer != nil {
+				peer.disconnectTimer.Stop()
+			}
+			peer.disconnectTimer = time.AfterFunc(10*time.Second, func() {
+				log.Printf("[SFU] Grace timer expired for %s, removing", clientID)
+				s.RemovePeerIfMatching(roomID, clientID, peer)
+			})
+			peer.mu.Unlock()
+		case webrtc.PeerConnectionStateConnected:
+			// Reconnected — cancel the grace timer
+			peer.mu.Lock()
+			if peer.disconnectTimer != nil {
+				peer.disconnectTimer.Stop()
+				peer.disconnectTimer = nil
+				log.Printf("[SFU] Peer %s reconnected, grace timer cancelled", clientID)
+			}
+			peer.mu.Unlock()
 		}
 	})
 
@@ -440,50 +681,35 @@ func (s *SFU) HandleOffer(roomID, roomType, clientID, displayName string, offerD
 		log.Printf("[SFU] Peer %s ICE state: %s", clientID, state)
 		if state == webrtc.ICEConnectionStateFailed ||
 			state == webrtc.ICEConnectionStateClosed {
-			s.RemovePeer(roomID, clientID)
+			s.RemovePeerIfMatching(roomID, clientID, peer)
 		}
 	})
 
-	// Forward existing room tracks to the new peer
-	room.mu.RLock()
-	existingPeers := make([]*Peer, 0, len(room.Peers))
-	for _, p := range room.Peers {
-		existingPeers = append(existingPeers, p)
-	}
-	room.mu.RUnlock()
-
-	for _, existing := range existingPeers {
-		if existing.remoteAudio != nil {
-			newTrack, trackErr := webrtc.NewTrackLocalStaticRTP(
-				existing.remoteAudio.Codec().RTPCodecCapability,
-				existing.remoteAudio.ID(),
-				existing.ID,
-			)
-			if trackErr == nil {
-				sender, addErr := pc.AddTrack(newTrack)
-				if addErr == nil {
-					log.Printf("[SFU] Added existing audio track from %s to new peer %s", existing.ID, clientID)
-					go pumpRemoteToLocal(existing.remoteAudio, newTrack, sender)
-				}
-			}
-		}
-		if room.RoomType == "video" && existing.remoteVideo != nil {
-			newTrack, trackErr := webrtc.NewTrackLocalStaticRTP(
-				existing.remoteVideo.Codec().RTPCodecCapability,
-				existing.remoteVideo.ID(),
-				existing.ID,
-			)
-			if trackErr == nil {
-				sender, addErr := pc.AddTrack(newTrack)
-				if addErr == nil {
-					log.Printf("[SFU] Added existing video track from %s to new peer %s", existing.ID, clientID)
-					go pumpRemoteToLocal(existing.remoteVideo, newTrack, sender)
-				}
-			}
-		}
-	}
-
 	room.mu.Lock()
+	// If a peer with the same clientID already exists (reconnect race),
+	// evict it cleanly: stop timers, remove from map, then close its PC
+	// and WS outside the lock to avoid deadlock with the old goroutine.
+	if oldPeer, exists := room.Peers[clientID]; exists {
+		oldPeer.alive.Store(false)
+		if oldPeer.disconnectTimer != nil {
+			oldPeer.disconnectTimer.Stop()
+		}
+		if oldPeer.negTimer != nil {
+			oldPeer.negTimer.Stop()
+		}
+		delete(room.Peers, clientID)
+		room.mu.Unlock()
+
+		log.Printf("[SFU] Evicting stale peer %s in room %s", clientID, roomID)
+		if oldPeer.PC != nil {
+			_ = oldPeer.PC.Close()
+		}
+		oldPeer.wsMu.Lock()
+		_ = oldPeer.WS.Close()
+		oldPeer.wsMu.Unlock()
+
+		room.mu.Lock()
+	}
 	room.Peers[clientID] = peer
 	newPeerCount := len(room.Peers)
 	room.mu.Unlock()
@@ -507,7 +733,9 @@ func (s *SFU) HandleOffer(roomID, roomType, clientID, displayName string, offerD
 		return err
 	}
 
-	<-webrtc.GatheringCompletePromise(pc)
+	// Trickle ICE: send the answer immediately without waiting for
+	// full candidate gathering. ICE candidates will be trickled
+	// by the OnICECandidate handler registered above.
 
 	// Send room_state to the new peer (includes the new peer themselves)
 	users := make([]map[string]interface{}, 0)
@@ -551,6 +779,49 @@ func (s *SFU) HandleOffer(roomID, roomType, clientID, displayName string, offerD
 		},
 	})
 	room.mu.RUnlock()
+
+	// Forward existing room tracks to the new peer
+	// Done after initial offer/answer to avoid OnNegotiationNeeded glare
+	room.mu.RLock()
+	existingPeers := make([]*Peer, 0, len(room.Peers))
+	for _, p := range room.Peers {
+		existingPeers = append(existingPeers, p)
+	}
+	room.mu.RUnlock()
+
+	for _, existing := range existingPeers {
+		if existing.ID == clientID {
+			continue
+		}
+		if existing.remoteAudio != nil {
+			newTrack, trackErr := webrtc.NewTrackLocalStaticRTP(
+				existing.remoteAudio.Codec().RTPCodecCapability,
+				existing.remoteAudio.ID(),
+				existing.ID,
+			)
+			if trackErr == nil {
+				sender, addErr := pc.AddTrack(newTrack)
+				if addErr == nil {
+					log.Printf("[SFU] Added existing audio track from %s to new peer %s", existing.ID, clientID)
+					go pumpRemoteToLocal(existing.remoteAudio, newTrack, sender)
+				}
+			}
+		}
+		if room.RoomType == "video" && existing.remoteVideo != nil {
+			newTrack, trackErr := webrtc.NewTrackLocalStaticRTP(
+				existing.remoteVideo.Codec().RTPCodecCapability,
+				existing.remoteVideo.ID(),
+				existing.ID,
+			)
+			if trackErr == nil {
+				sender, addErr := pc.AddTrack(newTrack)
+				if addErr == nil {
+					log.Printf("[SFU] Added existing video track from %s to new peer %s", existing.ID, clientID)
+					go pumpRemoteToLocal(existing.remoteVideo, newTrack, sender)
+				}
+			}
+		}
+	}
 
 	// Start heartbeat
 	s.startHeartbeat(roomID, peer)

@@ -32,6 +32,21 @@ node_modules/
 # Command Code
 .commandcode/
 
-# Misc
+# Compiled binaries
+*.exe
+
+# Downloaded archives
+*.zip
+*.tar.gz
+
+# LiveKit config (auto-generated)
+livekit.yaml
+livekit-config.yaml
+
+# Session / trace files (development artifacts)
 proposal.html
 SESSION_CONTEXT.md
+MIGRATION_PLAN.md
+SESSION_PROGRESS.md
+text.md
+test-livekit.html
